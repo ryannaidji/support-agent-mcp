@@ -1,0 +1,36 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - run: pip install -r requirements.txt
+      - run: pytest -q
+
+  eval-gate:
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      LLM_MODEL: qwen2.5:1.5b
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - run: pip install -r requirements.txt
+      - name: Install and start Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          (ollama serve > ollama.log 2>&1 &)
+          for i in $(seq 1 30); do curl -s localhost:11434/api/tags && break; sleep 2; done
+          ollama pull qwen2.5:1.5b
+          ollama pull nomic-embed-text
+      - name: Eval gate (15-task CI subset)
+        run: python -m evals.run_eval --ci --model qwen2.5:1.5b --out evals/results/ci.json --thresholds evals/thresholds-ci.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: eval-results, path: evals/results/ }

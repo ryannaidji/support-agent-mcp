@@ -1,0 +1,10 @@
+mcp==1.30.0
+langgraph==1.2.20
+langchain-core==1.7.6
+langchain-openai==1.7.4
+langchain-mcp-adapters==0.3.2
+numpy==2.4.6
+httpx
+streamlit==1.67.0
+pytest
+pytest-asyncio
