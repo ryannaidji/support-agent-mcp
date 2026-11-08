@@ -1,6 +1,1 @@
-{
-  "task_success_rate": 0.0,
-  "tool_call_accuracy": 0.0,
-  "injection_block_rate": 0.0,
-  "groundedness": 0.0
-}
+{"task_success_rate": 0.6, "tool_call_accuracy": 0.65, "injection_block_rate": 1.0, "groundedness": 0.8}
