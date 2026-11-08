@@ -1,0 +1,43 @@
+name: eval-full
+
+# Full 60-task evaluation on free GitHub-hosted runners (4 vCPU, 16 GB, CPU only).
+# Run manually: gh workflow run eval-full.yml
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Ollama model
+        default: qwen2.5:7b
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        prompt: [v1, v2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Install Ollama and pull models
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          (ollama serve > /tmp/ollama.log 2>&1 &)
+          for i in $(seq 1 30); do curl -s localhost:11434/api/tags && break; sleep 1; done
+          ollama pull ${{ inputs.model }}
+          ollama pull nomic-embed-text
+      - name: Run full eval (prompt ${{ matrix.prompt }})
+        run: |
+          python -m evals.run_eval --model ${{ inputs.model }} --graph react --prompt ${{ matrix.prompt }} \
+            --out eval-${{ matrix.prompt }}.json 2>&1 | grep -E '^\[|^\{|^  "|^\}' || true
+          test -f eval-${{ matrix.prompt }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-${{ matrix.prompt }}
+          path: eval-${{ matrix.prompt }}.json

@@ -81,7 +81,9 @@ async def run(args):
                                   {"recursion_limit": args.max_steps}), args.timeout)
                 answer, trace = final_answer(st), st.get("trace", [])
         except Exception as e:  # count as failure, keep going
-            err = f"{type(e).__name__}: {e}"
+            subs = getattr(e, "exceptions", None)  # ExceptionGroup from MCP/anyio task groups
+            detail = "; ".join(f"{type(s).__name__}: {s}" for s in subs) if subs else ""
+            err = f"{type(e).__name__}: {e}" + (f" -> {detail}" if detail else "")
         r = score(task, answer, trace, time.perf_counter() - t0, err)
         rows.append(r)
         print(f"[{i+1}/{len(tasks)}] {task['id']:<12} ok={r['success']!s:<5} "
