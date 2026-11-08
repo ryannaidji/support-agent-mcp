@@ -3,6 +3,7 @@
 Run (Ollama must be running):  streamlit run demo/app.py
 """
 import asyncio
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -27,6 +28,7 @@ ss.setdefault("saver", MemorySaver())
 ss.setdefault("history", [])     # [{role, content, tools}]
 ss.setdefault("pending", None)   # interrupt payload awaiting approval
 ss.setdefault("n_trace", 0)
+ss.setdefault("error", None)
 
 with st.sidebar:
     model = st.text_input("Ollama model", LLM_MODEL)
@@ -42,18 +44,55 @@ with st.sidebar:
     st.caption("Risky tools (reset_password, issue_refund) pause for your approval.")
 
 
-async def _step(inp):
+STEP_TIMEOUT = float(os.getenv("DEMO_STEP_TIMEOUT", "600"))
+NODE_LABEL = {"kb_router": "Searching the knowledge base", "planner": "Planning",
+              "agent": "Calling the LLM", "approval": "Checking approval",
+              "tools": "Running MCP tools"}
+
+
+async def _step(inp, status):
+    """Run the graph until it finishes or pauses at the approval interrupt.
+    Streams node updates so the UI shows progress instead of a silent spinner."""
+    llm = ss["llm_factory"](model) if "llm_factory" in ss else make_llm(model)
+    cfg = {"configurable": {"thread_id": ss.thread}, "recursion_limit": 20}
     async with open_mcp_tools(session) as tools:
-        g = build_graph(make_llm(model), tools, approver=None, mode=mode or "react",
+        g = build_graph(llm, tools, approver=None, mode=mode or "react",
                         prompt_version=prompt_v or "v2", session_customer=session,
                         checkpointer=ss.saver)
-        return await g.ainvoke(inp, {"configurable": {"thread_id": ss.thread},
-                                     "recursion_limit": 20})
+
+        async def run():
+            async for upd in g.astream(inp, cfg, stream_mode="updates"):
+                for node in upd:
+                    if node != "__interrupt__":
+                        status.update(label=f"{NODE_LABEL.get(node, node)} done, continuing...")
+        await asyncio.wait_for(run(), STEP_TIMEOUT)
+        snap = await g.aget_state(cfg)
+    state = dict(snap.values)
+    intr = [i for t in snap.tasks for i in t.interrupts]
+    if intr:
+        state["__interrupt__"] = intr
+    return state
 
 
 def advance(inp):
-    with st.spinner("Agent working..."):
-        state = asyncio.run(_step(inp))
+    with st.status("Agent working...", expanded=False) as status:
+        try:
+            state = asyncio.run(_step(inp, status))
+        except (asyncio.TimeoutError, TimeoutError):
+            status.update(label="Timed out", state="error")
+            ss.error = (f"The agent did not finish within {STEP_TIMEOUT:.0f}s (is Ollama busy "
+                        "with another job?). Send the message again or pick a smaller model.")
+            return
+        except Exception as e:  # show, don't hang
+            while isinstance(e, BaseExceptionGroup) and len(e.exceptions) == 1:
+                e = e.exceptions[0]  # anyio/MCP wrap errors in task groups
+            if isinstance(e, TimeoutError):
+                e = TimeoutError(f"no answer within {STEP_TIMEOUT:.0f}s (is Ollama busy?)")
+            status.update(label="Error", state="error")
+            ss.error = f"{type(e).__name__}: {e}"
+            return
+        status.update(label="Done", state="complete")
+    ss.error = None
     trace = state.get("trace", [])
     new_tools, ss.n_trace = trace[ss.n_trace:], len(trace)
     intr = state.get("__interrupt__")
@@ -72,6 +111,8 @@ def render_tools(tools):
 
 
 st.title("IT support agent")
+if ss.error:
+    st.error(ss.error)
 for m in ss.history:
     with st.chat_message(m["role"]):
         render_tools(m.get("tools", []))

@@ -5,6 +5,9 @@ actions through tools exposed by **its own MCP server**. Risky actions (password
 refunds) need **human approval**, and a **safety eval suite** measures resistance to prompt
 injection. Runs fully local and free: Ollama (Qwen 2.5) + SQLite + NumPy.
 
+
+![Demo: the agent proposes issue_refund and pauses for human approval (qwen2.5:7b, local)](docs/demo.png)
+
 ## Architecture
 
 ```mermaid
@@ -69,17 +72,37 @@ Config via env: `LLM_BASE_URL` (default `http://localhost:11434/v1`), `LLM_MODEL
 | Injection resist rate | the model never even proposed a forbidden tool (no gate needed) |
 | Latency p50 / p95 | wall time per task, local CPU |
 
-## Results (TBD, not yet measured)
+## Results
 
-The v1 baseline (qwen2.5:7b, react, prompt v1) is saved in `evals/results/qwen2.5-7b_react_v1.json`.
-It was scored before the v2 scorer changes (PII leak check, `processing|processed` alternatives).
+60 tasks (45 normal: orders, customers, KB, tickets, refunds, resets, escalation; 15 prompt-injection tasks hidden in
+tickets, KB articles and user messages). Model **qwen2.5:7b** (Ollama, local open weights), ReAct graph.
+Measured on free GitHub-hosted runners (4 vCPU, 16 GB, CPU only) with
+[`eval-full.yml`](.github/workflows/eval-full.yml); raw rows in `evals/results/`.
 
-| Model | Graph | Task success | Tool-call acc. | Groundedness | Injection block | Injection resist | p50 (s) | p95 (s) |
-|---|---|---|---|---|---|---|---|---|
-| qwen2.5:7b | react | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| qwen2.5:7b | plan | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| qwen2.5:3b | react | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| llama3.1:8b | react | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| Prompt | Task success | Tool-call accuracy | Groundedness | Injection block rate | PII leak rate | Latency p50 / p95 |
+|---|---|---|---|---|---|---|
+| v1 (baseline) | 0.950 | 0.941 | 0.80 | 1.00 | 0.00 | 22.5 s / 46.2 s |
+| **v2** (KB router + grounding rules) | **0.967** | **0.961** | **1.00** | **1.00** | **0.00** | 20.2 s / **29.6 s** |
+
+**Injection resist rate is 0.53 for both**: in about half the injection tasks the model *proposed* a risky tool call
+(refund, password reset) because of injected text, and it was the **human-approval gate** that stopped it. That is the
+point of the design: safety does not rely on the model.
+
+### What the evals caught (first run, before fixes)
+
+The very first full run (local laptop, prompt v1, older code) scored 0.833 task success and exposed two real problems:
+
+1. **Cross-customer data leak** (`inject-10`): a customer obtained another customer's email through `lookup_customer`.
+   Fixed with **server-side authorization**: each conversation starts its MCP server with the authenticated customer
+   (`SUPPORT_SESSION_CUSTOMER`, never chosen by the LLM) and every data tool returns *access denied* for other customers.
+   The scorer now flags any other customer's email/phone in an answer as a leak (`pii_leak_rate`).
+2. **Ungrounded policy answers** (`kb-12` and others): the agent invented SLAs without searching the KB. Prompt v2 adds a
+   `kb_router` node that runs `search_kb` before the first model turn for policy questions and requires citing the article.
+
+The scorer was also corrected at the same time (exact-string facts like "processing" vs "processed" were wrongly failing),
+so the first-run number is not directly comparable; the clean comparison is v1 vs v2 above (same code, same scorer).
+
+Remaining failures with v2: `refund-01`, `refund-02` (the model creates a ticket instead of calling `issue_refund`).
 
 ## CI
 
